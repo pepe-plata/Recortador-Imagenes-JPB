@@ -252,7 +252,6 @@ function applyAspectToCrop(keepCenter = true) {
 
 /* =========================================================
    Límites de la IMAGEN (no del viewport)
-   El frame no puede salir de la imagen dibujada.
    ========================================================= */
 function getImageBounds() {
   if (!state.img) {
@@ -270,8 +269,6 @@ function getImageBounds() {
   };
 }
 
-// Recorta el frame COMPLETO a los límites de la imagen.
-// Se usa tras mover el frame, hacer zoom, cambiar aspecto, etc.
 function clampCropToImage() {
   if (!state.img) return;
 
@@ -283,7 +280,6 @@ function clampCropToImage() {
   const availH = B.maxY - B.minY;
 
   if (availW <= 0 || availH <= 0) {
-    // La imagen no es visible: colapsar
     c.w = 1;
     c.h = 1;
     c.x = B.minX;
@@ -291,7 +287,6 @@ function clampCropToImage() {
     return;
   }
 
-  // Ajustar tamaño al espacio disponible
   c.w = Math.min(c.w, availW);
   c.h = Math.min(c.h, availH);
 
@@ -305,11 +300,9 @@ function clampCropToImage() {
     c.h = h;
   }
 
-  // Tamaño mínimo
   if (c.w < minSize) c.w = Math.min(minSize, availW);
   if (c.h < minSize) c.h = Math.min(minSize, availH);
 
-  // Reubicar dentro de la imagen
   c.x = Math.max(B.minX, Math.min(c.x, B.maxX - c.w));
   c.y = Math.max(B.minY, Math.min(c.y, B.maxY - c.h));
 }
@@ -559,11 +552,15 @@ function onPointerUp(e) {
   }
 }
 
+// ---------- Resize del crop ----------
 /* =========================================================
    Resize del crop
    Los 8 handles funcionan. El lado opuesto al handle
    permanece fijo y el lado arrastrado se limita al área
-   de la imagen (no del viewport).
+   de la imagen.
+
+   Partimos SIEMPRE del rectángulo original guardado en
+   dragStart.crop para evitar encogimientos acumulativos.
    ========================================================= */
 function resizeCrop(mode, dx, dy) {
   const start = state.dragStart.crop;
@@ -571,70 +568,82 @@ function resizeCrop(mode, dx, dy) {
   const asp = state.aspect;
   const B = getImageBounds();
 
-  const fixedLeft   = start.x;
-  const fixedTop    = start.y;
-  const fixedRight  = start.x + start.w;
-  const fixedBottom = start.y + start.h;
+  // Esquinas y centros originales
+  const origLeft   = start.x;
+  const origTop    = start.y;
+  const origRight  = start.x + start.w;
+  const origBottom = start.y + start.h;
+  const origCX     = origLeft + start.w / 2;
+  const origCY     = origTop  + start.h / 2;
 
-  let left   = start.x;
-  let right  = fixedRight;
-  let top    = start.y;
-  let bottom = fixedBottom;
+  // Posiciones tentativas partiendo del original
+  let left   = origLeft;
+  let right  = origRight;
+  let top    = origTop;
+  let bottom = origBottom;
 
-  if (mode === 'nw') { left = fixedRight + dx;  top = fixedBottom + dy; }
-  if (mode === 'n')  { top = fixedBottom + dy; }
-  if (mode === 'ne') { right = start.x + dx;    top = fixedBottom + dy; }
-  if (mode === 'e')  { right = start.x + dx; }
-  if (mode === 'se') { right = start.x + dx;    bottom = start.y + dy; }
-  if (mode === 's')  { bottom = start.y + dy; }
-  if (mode === 'sw') { left = fixedRight + dx;  bottom = start.y + dy; }
-  if (mode === 'w')  { left = fixedRight + dx; }
+  // Aplicar SOLO el desplazamiento correspondiente al handle
+  switch (mode) {
+    case 'nw': left  = origLeft  + dx; top    = origTop    + dy; break;
+    case 'n':  top   = origTop   + dy; break;
+    case 'ne': right = origRight + dx; top    = origTop    + dy; break;
+    case 'e':  right = origRight + dx; break;
+    case 'se': right = origRight + dx; bottom = origBottom + dy; break;
+    case 's':  bottom = origBottom + dy; break;
+    case 'sw': left  = origLeft  + dx; bottom = origBottom + dy; break;
+    case 'w':  left  = origLeft  + dx; break;
+  }
 
+  // Normalizar orden
   if (right < left) [left, right] = [right, left];
   if (bottom < top) [top, bottom] = [bottom, top];
 
-  // Aspecto: recalcular el lado complementario
+  // ---------- Restricción de aspecto ----------
   if (asp != null) {
     const isCorner = mode.length === 2;
-    const isHorizontal = mode === 'e' || mode === 'w';
-    const isVertical = mode === 'n' || mode === 's';
-    const cx0 = fixedLeft + (fixedRight - fixedLeft) / 2;
-    const cy0 = fixedTop  + (fixedBottom - fixedTop) / 2;
 
-    if (isVertical) {
-      const h = bottom - top;
+    if (mode === 'n' || mode === 's') {
+      // Alto manda; ancho derivado, centrado horizontalmente
+      const h = Math.max(1, bottom - top);
       const w = h * asp;
-      left = cx0 - w / 2;
-      right = cx0 + w / 2;
-    } else if (isHorizontal) {
-      const w = right - left;
+      left  = origCX - w / 2;
+      right = origCX + w / 2;
+    } else if (mode === 'e' || mode === 'w') {
+      // Ancho manda; alto derivado, centrado verticalmente
+      const w = Math.max(1, right - left);
       const h = w / asp;
-      top = cy0 - h / 2;
-      bottom = cy0 + h / 2;
+      top    = origCY - h / 2;
+      bottom = origCY + h / 2;
     } else if (isCorner) {
+      // Esquinas: partir del ancho/alto actual y ajustar al aspecto
       let w = right - left;
       let h = bottom - top;
-      if (w / h > asp) w = h * asp;
-      else h = w / asp;
+      if (w / h > asp) h = w / asp;
+      else w = h * asp;
 
-      if (mode === 'nw') {
-        right = fixedRight; bottom = fixedBottom;
-        left = right - w; top = bottom - h;
-      } else if (mode === 'ne') {
-        left = fixedLeft; bottom = fixedBottom;
-        right = left + w; top = bottom - h;
-      } else if (mode === 'sw') {
-        right = fixedRight; top = fixedTop;
-        left = right - w; bottom = top + h;
-      } else if (mode === 'se') {
-        left = fixedLeft; top = fixedTop;
-        right = left + w; bottom = top + h;
+      // Reanclar la esquina opuesta
+      switch (mode) {
+        case 'nw':
+          right = origRight; bottom = origBottom;
+          left = right - w;  top    = bottom - h;
+          break;
+        case 'ne':
+          left  = origLeft;  bottom = origBottom;
+          right = left + w;  top    = bottom - h;
+          break;
+        case 'sw':
+          right = origRight; top    = origTop;
+          left  = right - w; bottom = top + h;
+          break;
+        case 'se':
+          left  = origLeft;  top    = origTop;
+          right = left + w;  bottom = top + h;
+          break;
       }
     }
   }
 
-  // Clamp SOLO a los lados que se mueven, respetando tamaño mínimo
-  // Horizontal
+  // ---------- Clamp contra los límites de la imagen ----------
   if (mode.includes('w')) {
     if (left < B.minX) left = B.minX;
     if (right - left < minSize) left = right - minSize;
@@ -645,16 +654,6 @@ function resizeCrop(mode, dx, dy) {
     if (right - left < minSize) right = left + minSize;
     if (right > B.maxX) right = B.maxX;
   }
-  if (!mode.includes('w') && !mode.includes('e')) {
-    // Solo vertical: no tocamos lados horizontales
-    if (right - left < minSize) {
-      const cx = (left + right) / 2;
-      left = cx - minSize / 2;
-      right = cx + minSize / 2;
-    }
-  }
-
-  // Vertical
   if (mode.includes('n')) {
     if (top < B.minY) top = B.minY;
     if (bottom - top < minSize) top = bottom - minSize;
@@ -665,11 +664,19 @@ function resizeCrop(mode, dx, dy) {
     if (bottom - top < minSize) bottom = top + minSize;
     if (bottom > B.maxY) bottom = B.maxY;
   }
-  if (!mode.includes('n') && !mode.includes('s')) {
-    if (bottom - top < minSize) {
-      const cy = (top + bottom) / 2;
-      top = cy - minSize / 2;
-      bottom = cy + minSize / 2;
+
+  // Ajuste final del complementario si el clamp desvió el aspecto
+  if (asp != null) {
+    if (mode === 'n' || mode === 's') {
+      const h = bottom - top;
+      const w = h * asp;
+      left  = origCX - w / 2;
+      right = origCX + w / 2;
+    } else if (mode === 'e' || mode === 'w') {
+      const w = right - left;
+      const h = w / asp;
+      top    = origCY - h / 2;
+      bottom = origCY + h / 2;
     }
   }
 
